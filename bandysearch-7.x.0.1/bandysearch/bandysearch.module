@@ -1,0 +1,147 @@
+<?php
+
+function bandysearch_block_info() {
+  $blocks['bandysearch'] = array(
+    // The name that will appear in the block list.
+    'info' => t('Bandysearch'),
+    // Default setting.
+    'cache' => DRUPAL_CACHE_PER_ROLE,
+  );
+  return $blocks;
+}
+
+function bandysearch_help($path, $arg) {
+  switch ($path) {
+    case "admin/help#bandysearch":
+      return '<p>' . t("Uses Elasticsearch to provide fuzzy search results for Drupal contents") . '</p>';
+      break;
+  }
+} 
+
+function bandysearch_admin () {
+  	bandysearch_reload();
+  	$form = array();
+  	$form['bandysearch_maxresults'] = array(
+    	'#type' => 'textfield',
+    	'#title' => t('Maximum number of results'),
+    	'#default_value' => variable_get('onthisdate_maxdisp', 5),
+    	'#size' => 2,
+    	'#maxlength' => 2,
+    	'#description' => t("The maximum number of results to display on any one page."),
+    	'#required' => TRUE,
+  	);
+  	$form['bandysearch_reindex'] = array(
+    	'#type' => 'button',
+    	'#value' => t('Reindex Elasticsearch content mirror'),
+    	'#suffix' => t("Flushes the Elasticsearch index and rebuilds it with current site data."),
+  	);
+  	return system_settings_form($form);
+}
+
+function bandysearch_form($form, &$form_state) {
+  $form['terms'] = array(
+    '#type' => 'textfield',
+    '#size' => 24,
+  );  		
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Search'),
+  );
+  $form['#action'] = url('bandysearch');
+  return $form;
+}
+
+function bandysearch_block_view($delta = '') {
+  	switch ($delta) {
+	    case 'bandysearch':
+	      $block['subject'] = t('Bandysearch');
+	      if (user_access('access content')) {
+	          $block['content'] = drupal_get_form('bandysearch_form');
+	      }
+	return $block;
+  }
+}
+
+function bandysearch_reload() {
+	require 'vendor/autoload.php';
+	$client = new Elasticsearch\Client();	
+	
+	$query = new EntityFieldQuery();
+
+	$query->entityCondition('entity_type', 'node')
+  		->entityCondition('bundle', 'article')
+  		->propertyCondition('status', 1);
+
+	$result = $query->execute();
+
+	if (!empty($result['node'])) {
+  		$nids = array_keys($result['node']);
+
+  		$deleteParams['index'] = 'site_contents';
+		$client->indices()->delete($deleteParams);
+  		
+ 		foreach ($nids as $nid) {
+    		$node = node_load($nid, NULL, TRUE);
+			
+			$params = array();
+			$params['body']  = array('content' => $node->body, 'title' => $node->title, 'link' => url('node/'. $node->nid));
+			$params['index'] = 'site_contents';
+			$params['type'] = 'drupal_content';
+
+			$ret = $client->index($params);	
+    
+  		}
+	}
+}
+
+function bandysearch_menu() {
+  $items = array();
+  $items['admin/config/search/bandysearch'] = array(
+    'title' => 'Bandysearch settings',
+    'description' => 'Set preferences for Bandysearch',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('bandysearch_admin'),
+    'access arguments' => array('access administration pages'),
+    'type' => MENU_NORMAL_ITEM,
+   );
+  $items['bandysearch'] = array(
+    'title' => 'Bandysearch',
+    'page callback' => 'bandysearch_results',
+    'access arguments' => array('access Bandysearch content'),
+    'type' => MENU_CALLBACK
+  );
+  return $items;
+}
+
+function bandysearch_results() {
+	require 'vendor/autoload.php';
+	$client = new Elasticsearch\Client();		
+	
+	$params = array();
+	$params['index'] = 'site_contents';
+	$params['type']  = 'drupal_content';
+
+	$json = '{
+	    "query" : {
+	        "fuzzy" : {
+	            "value" : "'.$_POST['terms'].'"
+	        }
+	    }
+	}';
+	
+	$params['body']  = $json;
+	$results = $client->search($params);
+	
+	$page_content = "<h2>Results</h2><br/>";
+	$number = $results["hits"]["total"] - 1;
+	if ($number >= 10) { $number = 9; }
+  	for ($a = 0; $a <= $number; $a++) {
+  		$page_content .= '<p>'.($a+1).'. <a href="'.$results["hits"]["hits"][$a]["_source"]["link"].'">'.$results["hits"]["hits"][$a]["_source"]["title"].'</a></p>';	
+  	}
+	if ($a == 0) {
+		$page_content .= "<p>Nothing found! Try again!</p>";
+	}
+	
+  	#$results["hits"]["hits"][0]["_source"]["content"]["und"][0]["value"];
+  	return $page_content;
+}

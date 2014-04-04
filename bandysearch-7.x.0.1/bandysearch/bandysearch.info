@@ -1,0 +1,4 @@
+name = Bandysearch
+description = Search Drupal with Elasticsearch
+core = 7.x
+files[] = bandysearch.module
